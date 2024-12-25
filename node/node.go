@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/tendermint/tendermint/p2p/load"
 	"net"
 	"net/http"
 	"strings"
@@ -649,6 +650,38 @@ func createSwitch(config *cfg.Config,
 	return sw
 }
 
+func createSwitchWithMock(config *cfg.Config,
+	transport p2p.Transport,
+	p2pMetrics *p2p.Metrics,
+	peerFilters []p2p.PeerFilterFunc,
+	mempoolReactor p2p.Reactor,
+	bcReactor p2p.Reactor,
+	stateSyncReactor *statesync.Reactor,
+	consensusReactor *cs.Reactor,
+	evidenceReactor *evidence.Reactor,
+	mockReactor *load.MockReactor,
+	nodeInfo p2p.NodeInfo,
+	nodeKey *p2p.NodeKey,
+	p2pLogger log.Logger,
+	tracer trace.Tracer,
+) *p2p.Switch {
+	sw := p2p.NewSwitch(
+		config.P2P,
+		transport,
+		p2p.WithMetrics(p2pMetrics),
+		p2p.SwitchPeerFilters(peerFilters...),
+		p2p.WithTracer(tracer),
+	)
+	sw.SetLogger(p2pLogger)
+	sw.AddReactor("MOCK", mockReactor)
+
+	sw.SetNodeInfo(nodeInfo)
+	sw.SetNodeKey(nodeKey)
+
+	p2pLogger.Info("P2P Node ID", "ID", nodeKey.ID(), "file", config.NodeKeyFile())
+	return sw
+}
+
 func createAddrBookAndSetOnSwitch(config *cfg.Config, sw *p2p.Switch,
 	p2pLogger log.Logger, nodeKey *p2p.NodeKey,
 ) (pex.AddrBook, error) {
@@ -950,13 +983,36 @@ func NewNodeWithContext(ctx context.Context,
 
 	// Setup Transport.
 	transport, peerFilters := createTransport(config, nodeInfo, nodeKey, proxyApp, tracer)
-
-	// Setup Switch.
+	var sw *p2p.Switch
 	p2pLogger := logger.With("module", "p2p")
-	sw := createSwitch(
-		config, transport, p2pMetrics, peerFilters, mempoolReactor, bcReactor,
-		stateSyncReactor, consensusReactor, evidenceReactor, nodeInfo, nodeKey, p2pLogger, tracer,
-	)
+	if true {
+		mockReactor := load.NewMockReactor(load.DefaultTestChannels, 500_000)
+		mockReactor.SetLogger(logger.With("module", "mock"))
+		mockReactor.SetTracer(tracer)
+
+		go func() {
+			time.Sleep(time.Minute)
+			logger.Error("starting benchmark")
+
+			go func() {
+				for {
+					mockReactor.PrintSpeeds()
+					time.Sleep(10 * time.Second)
+				}
+			}()
+		}()
+		p2pLogger := logger.With("module", "p2p")
+		sw = createSwitchWithMock(
+			config, transport, p2pMetrics, peerFilters, mempoolReactor, bcReactor,
+			stateSyncReactor, consensusReactor, evidenceReactor, mockReactor, nodeInfo, nodeKey, p2pLogger, tracer,
+		)
+	} else {
+		// Setup Switch.
+		sw = createSwitch(
+			config, transport, p2pMetrics, peerFilters, mempoolReactor, bcReactor,
+			stateSyncReactor, consensusReactor, evidenceReactor, nodeInfo, nodeKey, p2pLogger, tracer,
+		)
+	}
 
 	err = sw.AddPersistentPeers(splitAndTrimEmpty(config.P2P.PersistentPeers, ",", " "))
 	if err != nil {
@@ -1035,6 +1091,26 @@ func NewNodeWithContext(ctx context.Context,
 	}
 
 	return node, nil
+}
+
+func newMockReactor(logger log.Logger, tracer trace.Tracer) {
+
+	mockReactor := load.NewMockReactor(load.DefaultTestChannels, 500_000)
+	mockReactor.SetLogger(logger.With("module", "mock"))
+	mockReactor.SetTracer(tracer)
+
+	go func() {
+		time.Sleep(time.Minute)
+		logger.Error("starting benchmark")
+
+		go func() {
+			for {
+				mockReactor.PrintSpeeds()
+				time.Sleep(10 * time.Second)
+			}
+		}()
+	}()
+
 }
 
 // OnStart starts the Node. It implements service.Service.
